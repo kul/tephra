@@ -23,7 +23,6 @@ import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.filter.FilterBase;
-import org.apache.hadoop.hbase.regionserver.ScanType;
 import org.apache.hadoop.hbase.util.Bytes;
 
 import java.io.IOException;
@@ -39,11 +38,8 @@ public class TransactionVisibilityFilter extends FilterBase {
   private final Transaction tx;
   // oldest visible timestamp by column family, used to apply TTL when reading
   private final Map<byte[], Long> oldestTsByFamily;
-  // if false, empty values will be interpreted as deletes
-  private final boolean allowEmptyValues;
-  // whether or not we can remove delete markers
-  // these can only be safely removed when we are traversing all storefiles
-  private final boolean clearDeletes;
+  // delete marker implementation to use
+  private final DeleteStrategy deleteStrategy;
   // optional sub-filter to apply to visible cells
   private final Filter cellFilter;
 
@@ -56,13 +52,10 @@ public class TransactionVisibilityFilter extends FilterBase {
    *
    * @param tx the current transaction to apply.  Only data visible to this transaction will be returned.
    * @param ttlByFamily map of time-to-live (TTL) (in milliseconds) by column family name
-   * @param allowEmptyValues if {@code true} cells with empty {@code byte[]} values will be returned, if {@code false}
-   *                         these will be interpreted as "delete" markers and the column will be filtered out
-   * @param scanType the type of scan operation being performed
+   * @param deleteStrategy the implementation of delete marker handling to use
    */
-  public TransactionVisibilityFilter(Transaction tx, Map<byte[], Long> ttlByFamily, boolean allowEmptyValues,
-                                     ScanType scanType) {
-    this(tx, ttlByFamily, allowEmptyValues, scanType, null);
+  public TransactionVisibilityFilter(Transaction tx, Map<byte[], Long> ttlByFamily, DeleteStrategy deleteStrategy) {
+    this(tx, ttlByFamily, deleteStrategy, null);
   }
 
   /**
@@ -70,15 +63,13 @@ public class TransactionVisibilityFilter extends FilterBase {
    *
    * @param tx the current transaction to apply.  Only data visible to this transaction will be returned.
    * @param ttlByFamily map of time-to-live (TTL) (in milliseconds) by column family name
-   * @param allowEmptyValues if {@code true} cells with empty {@code byte[]} values will be returned, if {@code false}
-   *                         these will be interpreted as "delete" markers and the column will be filtered out
-   * @param scanType the type of scan operation being performed
+   * @param deleteStrategy the implementation of delete marker handling to use
    * @param cellFilter if non-null, this filter will be applied to all cells visible to the current transaction, by
    *                   calling {@link Filter#filterKeyValue(org.apache.hadoop.hbase.Cell)}.  If null, then
    *                   {@link Filter.ReturnCode#INCLUDE_AND_NEXT_COL} will be returned instead.
    */
-  public TransactionVisibilityFilter(Transaction tx, Map<byte[], Long> ttlByFamily, boolean allowEmptyValues,
-                                     ScanType scanType, @Nullable Filter cellFilter) {
+  public TransactionVisibilityFilter(Transaction tx, Map<byte[], Long> ttlByFamily, DeleteStrategy deleteStrategy,
+                                     @Nullable Filter cellFilter) {
     this.tx = tx;
     this.oldestTsByFamily = Maps.newTreeMap(Bytes.BYTES_COMPARATOR);
     for (Map.Entry<byte[], Long> ttlEntry : ttlByFamily.entrySet()) {
@@ -86,9 +77,7 @@ public class TransactionVisibilityFilter extends FilterBase {
       oldestTsByFamily.put(ttlEntry.getKey(),
                            familyTTL <= 0 ? 0 : tx.getVisibilityUpperBound() - familyTTL * TxConstants.MAX_TX_PER_MS);
     }
-    this.allowEmptyValues = allowEmptyValues;
-    this.clearDeletes =
-        scanType == ScanType.COMPACT_DROP_DELETES || scanType == ScanType.USER_SCAN;
+    this.deleteStrategy = deleteStrategy;
     this.cellFilter = cellFilter;
   }
 
@@ -106,14 +95,8 @@ public class TransactionVisibilityFilter extends FilterBase {
       // passed TTL for this column, seek to next
       return ReturnCode.NEXT_COL;
     } else if (tx.isVisible(kvTimestamp)) {
-      if (cell.getValueLength() == 0 && !allowEmptyValues) {
-        if (clearDeletes) {
-          // skip "deleted" cell
-          return ReturnCode.NEXT_COL;
-        } else {
-          // keep the marker but skip any remaining versions
-          return ReturnCode.INCLUDE_AND_NEXT_COL;
-        }
+      if (deleteStrategy.isDelete(cell)) {
+        return deleteStrategy.getReturnCode();
       }
       // cell is visible
       if (cellFilter != null) {
@@ -125,6 +108,11 @@ public class TransactionVisibilityFilter extends FilterBase {
     } else {
       return ReturnCode.SKIP;
     }
+  }
+
+  @Override
+  public void reset() throws IOException {
+    deleteStrategy.reset();
   }
 
   @Override
