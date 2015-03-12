@@ -29,6 +29,7 @@ import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CoprocessorEnvironment;
 import org.apache.hadoop.hbase.HColumnDescriptor;
@@ -92,8 +93,8 @@ public class TransactionProcessor extends BaseRegionObserver {
 
   private TransactionStateCache cache;
   private final TransactionCodec txCodec;
+  protected Configuration conf;
   protected Map<byte[], Long> ttlByFamily = Maps.newTreeMap(Bytes.BYTES_COMPARATOR);
-  protected boolean allowEmptyValues = TxConstants.ALLOW_EMPTY_VALUES_DEFAULT;
 
   public TransactionProcessor() {
     this.txCodec = new TransactionCodec();
@@ -123,9 +124,7 @@ public class TransactionProcessor extends BaseRegionObserver {
         }
         ttlByFamily.put(columnDesc.getName(), ttl);
       }
-
-      this.allowEmptyValues = env.getConfiguration().getBoolean(TxConstants.ALLOW_EMPTY_VALUES_KEY,
-                                                                TxConstants.ALLOW_EMPTY_VALUES_DEFAULT);
+      this.conf = env.getConfiguration();
     }
   }
 
@@ -177,8 +176,8 @@ public class TransactionProcessor extends BaseRegionObserver {
       List<? extends KeyValueScanner> scanners, ScanType scanType, long earliestPutTs, InternalScanner s,
       CompactionRequest request)
       throws IOException {
-    return createStoreScanner(c.getEnvironment(), "compaction", cache.getLatestState(), store, scanners, scanType,
-                              earliestPutTs);
+    return createStoreScanner(c.getEnvironment(), "compaction", cache.getLatestState(), store, scanners,
+                              scanType, earliestPutTs);
   }
 
   protected InternalScanner createStoreScanner(RegionCoprocessorEnvironment env, String action,
@@ -220,10 +219,15 @@ public class TransactionProcessor extends BaseRegionObserver {
    * transaction.
    *
    * @param tx the current transaction to apply
-   * @param scanType the type of scan operation being performed
+   * @param type the type of scan being performed
    */
-  protected Filter getTransactionFilter(Transaction tx, ScanType scanType) {
-    return new TransactionVisibilityFilter(tx, ttlByFamily, allowEmptyValues, scanType);
+  protected Filter getTransactionFilter(Transaction tx, ScanType type) {
+    boolean clearDeletes = type == ScanType.COMPACT_DROP_DELETES || type == ScanType.USER_SCAN;
+    return new TransactionVisibilityFilter(tx, ttlByFamily, getDeleteStrategy(clearDeletes, conf));
+  }
+
+  public static DeleteStrategy getDeleteStrategy(boolean clearDeletes, Configuration conf) {
+    return new EmptyValueDeleteStrategy(clearDeletes, conf);
   }
 
   /**

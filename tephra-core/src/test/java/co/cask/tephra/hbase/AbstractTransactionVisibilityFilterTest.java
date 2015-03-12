@@ -38,10 +38,11 @@ public abstract class AbstractTransactionVisibilityFilterTest {
   protected static final List<byte[]> EMPTY_CHANGESET = Lists.newArrayListWithCapacity(0);
 
   protected TransactionManager txManager;
+  protected Configuration conf;
 
   @Before
   public void setup() throws Exception {
-    Configuration conf = new ConfigurationFactory().get();
+    conf = new ConfigurationFactory().get();
     conf.unset(TxConstants.Persist.CFG_TX_SNAPHOT_CODEC_CLASSES);
     txManager = new TransactionManager(conf);
     txManager.startAndWait();

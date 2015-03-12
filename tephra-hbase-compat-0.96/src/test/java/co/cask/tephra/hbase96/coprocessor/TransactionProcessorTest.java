@@ -301,7 +301,8 @@ public class TransactionProcessorTest {
       // read all back
       scan = new Scan(row);
       scan.setFilter(new TransactionVisibilityFilter(
-          TxUtils.createDummyTransaction(txSnapshot), new TreeMap<byte[], Long>(), false, ScanType.USER_SCAN));
+          TxUtils.createDummyTransaction(txSnapshot), new TreeMap<byte[], Long>(),
+          TransactionProcessor.getDeleteStrategy(true, conf)));
       regionScanner = region.getScanner(scan);
       results = Lists.newArrayList();
       assertFalse(regionScanner.next(results));
@@ -323,7 +324,8 @@ public class TransactionProcessorTest {
 
       scan = new Scan(row);
       scan.setFilter(new TransactionVisibilityFilter(
-          TxUtils.createDummyTransaction(txSnapshot), new TreeMap<byte[], Long>(), false, ScanType.USER_SCAN));
+          TxUtils.createDummyTransaction(txSnapshot), new TreeMap<byte[], Long>(),
+          TransactionProcessor.getDeleteStrategy(true, conf)));
       regionScanner = region.getScanner(scan);
       results = Lists.newArrayList();
       assertFalse(regionScanner.next(results));
